@@ -1,11 +1,14 @@
 -------------------------------------------------------------------------------
--- Siege AI, step 1b (test build): a mod script that runs in every battle.
+-- Siege AI, step 1c (test build): a mod script that runs in every battle.
 --
--- 60 seconds after deployment ends, every AI unit is handed to the game's own AI
--- planner with one order: attack the player's army. script_ai_planner:attack_force
--- re-aims at the nearest player unit every 15 seconds.
--- Every 20 seconds after that, units that arrived since (reinforcements) are added
--- and the order is given again. Step 1 grabbed units once and missed reinforcements.
+-- 60 seconds after deployment ends, every AI unit gets its OWN attack order: go for
+-- the player unit nearest to it (script_ai_planner:attack_force, which re-aims every
+-- 15 seconds and when its target routs). Every 20 seconds after that, units that
+-- arrived since (reinforcements) get their own order too.
+--
+-- History: step 1 grabbed units once and missed reinforcements (fixed in 1b).
+-- Steps 1 and 1b used ONE planner for the whole army; attack_force picks a single
+-- target for a planner, so the whole army walked to one player unit and queued (1c).
 --
 -- Not for real play when YOU attack: it also pushes AI defenders out of their cities.
 -------------------------------------------------------------------------------
@@ -29,7 +32,8 @@ end
 local sunit_cache = {}
 
 -- every unit of an alliance, including reinforcements (same as CA's generated_army:build_sunits)
-local function sunits_of(alliance_num)
+-- returns a list of { key = "alliance:army:unit", su = script_unit }
+local function units_of(alliance_num)
 	local list = {}
 	local armies = bm:alliances():item(alliance_num):armies()
 	for a = 1, armies:count() do
@@ -40,20 +44,22 @@ local function sunits_of(alliance_num)
 			count = count + r_units:count()
 		end
 		for u = 1, count do
-			local key = alliance_num .. ":" .. a .. ":" .. u
+			local key = alliance_num .. "_" .. a .. "_" .. u
 			if sunit_cache[key] == nil then
 				local su = script_unit:new(army, u)
 				sunit_cache[key] = is_scriptunit(su) and su or false
 			end
 			if sunit_cache[key] then
-				table.insert(list, sunit_cache[key])
+				table.insert(list, { key = key, su = sunit_cache[key] })
 			end
 		end
 	end
 	return list
 end
 
-local planner = nil
+local planners = {}        -- one planner per AI unit, by key
+local player_targets = {}  -- shared target list; planners keep a reference, so new player units appear for all
+local targeted = {}
 
 local function push_ai()
 	if is_multiplayer() then
@@ -62,28 +68,30 @@ local function push_ai()
 	end
 	local player_num = bm:local_alliance()
 	local ai_num = (player_num == 1) and 2 or 1
-	local ai_units = sunits_of(ai_num)
-	local player_units = sunits_of(player_num)
-	if #ai_units == 0 or #player_units == 0 then
+
+	for _, entry in ipairs(units_of(player_num)) do
+		if not targeted[entry.key] then
+			targeted[entry.key] = true
+			table.insert(player_targets, entry.su)
+		end
+	end
+	if #player_targets == 0 then
 		return
 	end
+
 	local joined = 0
-	if planner == nil then
-		planner = script_ai_planner:new("siege_ai_push", ai_units)
-		if not planner then
-			return
+	for _, entry in ipairs(units_of(ai_num)) do
+		if planners[entry.key] == nil then
+			local planner = script_ai_planner:new("siege_ai_" .. entry.key, { entry.su })
+			planners[entry.key] = planner or false
+			if planner then
+				planner:attack_force(player_targets)
+				joined = joined + 1
+			end
 		end
-		joined = #planner.sunit_list
-	else
-		local before = #planner.sunit_list
-		planner:add_sunits(ai_units)  -- skips units it already controls
-		joined = #planner.sunit_list - before
 	end
-	-- re-order only when units joined, so units already climbing aren't interrupted;
-	-- the planner re-aims everyone at the nearest player unit every 15 s on its own
 	if joined > 0 then
-		bm:out("[siege_ai] " .. joined .. " AI units joined, ordering attack on " .. #player_units .. " player units")
-		planner:attack_force(player_units)
+		bm:out("[siege_ai] " .. joined .. " AI units given their own attack order")
 	end
 	bm:callback(push_ai, RESCAN_MS, "siege_ai_rescan")
 end
@@ -92,4 +100,4 @@ bm:register_phase_change_callback("Deployed", function()
 	bm:callback(push_ai, PUSH_DELAY_MS, "siege_ai_push")
 end)
 
-bm:out("[siege_ai] step 1b loaded: AI pushes " .. PUSH_DELAY_MS / 1000 .. " s after deployment, rescans every " .. RESCAN_MS / 1000 .. " s")
+bm:out("[siege_ai] step 1c loaded: per-unit attack orders " .. PUSH_DELAY_MS / 1000 .. " s after deployment, rescans every " .. RESCAN_MS / 1000 .. " s")
