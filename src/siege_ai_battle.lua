@@ -1,20 +1,19 @@
 -------------------------------------------------------------------------------
--- Siege AI, step 1d (test build): a mod script that runs in every battle.
+-- Siege AI, step 1e (test build): a mod script that runs in every battle.
 --
--- Orders are the same as 1c: 60 seconds after deployment ends, every AI unit gets
--- its OWN attack order: go for the player unit nearest to it
--- (script_ai_planner:attack_force, which re-aims every 15 seconds and when its
--- target routs). Every 20 seconds after that, units that arrived since
--- (reinforcements) get their own order too.
+-- 60 seconds after deployment ends, each AI ARMY gets one attack order: go for the
+-- player unit nearest to it (script_ai_planner:attack_force, which re-aims every
+-- 15 seconds and when its target routs). Every 20 seconds after that, units that
+-- arrived since (reinforcements) join their army's planner, and that army is
+-- re-ordered. With one AI army this is exactly step 1b, the build that worked.
 --
--- New in 1d: a log file, siege_ai_log.txt, recording whether the script loaded,
--- every order given, where every AI unit stands every 20 s and how far it is from
--- the nearest player unit, and any Lua error. CA's own scripts never write files,
--- so every logging step may fail; the battle script carries on without it.
+-- Reports on screen through the advisor (effect.advice, the library's debug path),
+-- because the log file of 1d was never written: the game's working folder is "/".
 --
--- History: step 1 grabbed units once and missed reinforcements (fixed in 1b).
--- Steps 1 and 1b used ONE planner for the whole army; attack_force picks a single
--- target for a planner, so the whole army walked to one player unit and queued (1c).
+-- History: 1 missed reinforcements (1b fixed). 1b used one planner for all AI
+-- units, so everyone walked to one player unit (1c). 1c/1d made one planner per
+-- unit (20-40 planners); in game the AI then behaved as if unmodded. CA's own
+-- battle scripts never use more than 4 planners, so 1e uses one per army.
 --
 -- Not for real play when YOU attack: it also pushes AI defenders out of their cities.
 -------------------------------------------------------------------------------
@@ -53,6 +52,11 @@ local function open_log()
 	end
 end
 open_log()
+
+-- on-screen text through the advisor; with is_debug the library shows text as-is
+local function show(msg)
+	pcall(function() effect.advice("Siege AI: " .. msg) end)
+end
 
 local function log(msg)
 	bm:out("[siege_ai] " .. msg)
@@ -97,7 +101,7 @@ local function units_of(alliance_num)
 				sunit_cache[key] = is_scriptunit(su) and su or false
 			end
 			if sunit_cache[key] then
-				table.insert(list, { key = key, su = sunit_cache[key] })
+				table.insert(list, { key = key, army = alliance_num .. "_" .. a, su = sunit_cache[key] })
 			end
 		end
 	end
@@ -139,7 +143,8 @@ end
 -- the push
 -------------------------------------------------------------------------------
 
-local planners = {}        -- one planner per AI unit, by key
+local error_count = 0
+local planners = {}        -- one planner per AI army, by "alliance_army"
 local player_targets = {}  -- shared target list; planners keep a reference, so new player units appear for all
 local targeted = {}
 
@@ -165,7 +170,7 @@ local function log_status(ai_entries)
 	end
 	log(string.format("status: %d AI units, %d standing; %d player targets", #ai_entries, standing, #player_targets))
 	for _, entry in ipairs(ai_entries) do
-		local planner = planners[entry.key]
+		local planner = planners[entry.army]
 		local target = planner and planner.current_target
 		local ok, d = pcall(nearest_target_distance, entry.su)
 		log(string.format("  %s %s | nearest player %s | target %s",
@@ -193,20 +198,44 @@ local function push_ai()
 	end
 
 	local ai_entries = units_of(ai_num)
+	local by_army, army_order = {}, {}
+	for _, entry in ipairs(ai_entries) do
+		if not by_army[entry.army] then
+			by_army[entry.army] = {}
+			table.insert(army_order, entry.army)
+		end
+		table.insert(by_army[entry.army], entry.su)
+	end
+	local ordered = {}
 	if #player_targets > 0 then
-		for _, entry in ipairs(ai_entries) do
-			if planners[entry.key] == nil then
-				local planner = script_ai_planner:new("siege_ai_" .. entry.key, { entry.su })
-				planners[entry.key] = planner or false
-				if planner then
-					planner:attack_force(player_targets)
-					local target = planner.current_target
-					log("order: " .. entry.key .. " " .. describe(entry.su) .. " -> " .. (target and describe(target) or "no target"))
-				else
-					log("order FAILED: could not create planner for " .. entry.key .. " " .. describe(entry.su))
+		for _, army in ipairs(army_order) do
+			local sunits = by_army[army]
+			local planner = planners[army]
+			local joined = 0
+			if planner == nil then
+				planner = script_ai_planner:new("siege_ai_army_" .. army, sunits)
+				planners[army] = planner or false
+				joined = planner and #planner.sunit_list or 0
+				if not planner then
+					log("order FAILED: could not create planner for army " .. army)
+					show("could not create a planner for army " .. army)
 				end
+			elseif planner then
+				local before = #planner.sunit_list
+				planner:add_sunits(sunits)  -- skips units it already controls
+				joined = #planner.sunit_list - before
+			end
+			-- re-order only when units joined, so units already climbing aren't interrupted
+			if planner and joined > 0 then
+				planner:attack_force(player_targets)
+				local target = planner.current_target
+				log("order: army " .. army .. ", " .. joined .. " new units, " .. #planner.sunit_list .. " total -> " .. (target and describe(target) or "no target"))
+				table.insert(ordered, "army " .. army .. ": " .. #planner.sunit_list .. " units")
 			end
 		end
+	end
+	if #ordered > 0 then
+		show("attack ordered - " .. table.concat(ordered, ", ") .. " (errors so far: " .. error_count .. ")")
 	end
 	log_status(ai_entries)
 	if not mp_check_ran then
@@ -215,13 +244,12 @@ local function push_ai()
 	return true
 end
 
-local error_count = 0
-
 local function push_ai_safe()
 	local ok, result = pcall(push_ai)
 	if not ok then
 		error_count = error_count + 1
 		log("ERROR " .. error_count .. "/" .. MAX_ERRORS .. ": " .. tostring(result))
+		show("error " .. error_count .. ": " .. tostring(result))
 		if error_count >= MAX_ERRORS then
 			log("too many errors, stopping")
 			return
@@ -238,7 +266,8 @@ end)
 
 bm:register_phase_change_callback("Deployed", function()
 	log("phase: Deployed; first push in " .. PUSH_DELAY_MS / 1000 .. " s; " .. battle_summary())
+	show("1e active, push in " .. PUSH_DELAY_MS / 1000 .. " s. " .. battle_summary() .. ". io=" .. type(io) .. " os=" .. type(os) .. " log=" .. tostring(log_path))
 	bm:callback(push_ai_safe, PUSH_DELAY_MS, "siege_ai_push")
 end)
 
-log("==== step 1d loaded; log file: " .. tostring(log_path) .. "; " .. battle_summary())
+log("==== step 1e loaded; log file: " .. tostring(log_path) .. "; " .. battle_summary())
