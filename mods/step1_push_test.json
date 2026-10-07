@@ -1,6 +1,6 @@
 {
   "pack": "siege_ai_step1.pack",
-  "purpose": "Test build only (step 1c). 60 s after deployment every AI unit gets its own attack order on the player unit nearest to it; every 20 s after that, newly arrived AI units (reinforcements) get one too. Also pushes AI defenders out of their cities, so not for real play when the player attacks.",
+  "purpose": "Test build only (step 1d = 1c + log file siege_ai_log.txt). 60 s after deployment every AI unit gets its own attack order on the player unit nearest to it; every 20 s after that, newly arrived AI units (reinforcements) get one too. Also pushes AI defenders out of their cities, so not for real play when the player attacks.",
   "patch_vanilla": {
     "lua_scripts\\battle_scripted.lua": "src/hook_battle_scripted.lua"
   },
