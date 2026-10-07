@@ -1,0 +1,13 @@
+{
+  "pack": "siege_ai_canary.pack",
+  "purpose": "Load test only, not for real play. Ladders climb 4x faster, so one custom siege shows whether the Mac game applied a small mod table on top of the vanilla one.",
+  "changes": {
+    "_kv_rules_tables": {
+      "file": "!siege_ai_canary",
+      "rows": {
+        "climbing_ladder_normal_speed_modifier": 4.0,
+        "climbing_ladder_fast_speed_modifier": 6.0
+      }
+    }
+  }
+}
